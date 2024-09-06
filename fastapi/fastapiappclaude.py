@@ -1,8 +1,10 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Response
+import requests
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import List, Dict
-from langchain_community.llms import Ollama
+import os
+from typing import List
+
 from langchain_community.vectorstores import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
@@ -10,13 +12,11 @@ from langchain_community.document_loaders import PDFPlumberLoader
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.chains import create_retrieval_chain
 from langchain.prompts import PromptTemplate
-import os
 
 app = FastAPI()
 
 folder_path = "db"
-ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-cached_llm = Ollama(base_url=ollama_host, model="llama3.1")
+
 embedding = FastEmbedEmbeddings()
 
 text_splitter = RecursiveCharacterTextSplitter(
@@ -27,38 +27,31 @@ raw_prompt = PromptTemplate.from_template(
     """ 
     <s>[INST] You are a technical assistant good at searching documents. If you do not have an answer from the provided information say so. [/INST] </s>
     [INST] {input}
-           Context: {context}
-           Answer:
+        Context: {context}
+        Answer:
     [/INST]
 """
 )
 
-class QueryRequest(BaseModel):
+class Query(BaseModel):
     query: str
 
-class DeletePDFRequest(BaseModel):
+class DeletePDF(BaseModel):
     file_name: str
 
-
 @app.post("/ai")
-async def ai_post(query_request: QueryRequest):
-    print("Post /ai called")
-    query = query_request.query
-    print(f"query: {query}")
-
-    response = cached_llm.invoke(query)
-    print(response)
-
-    response_answer = {"answer": response}
-    return response_answer
-
+async def ai_post(query: Query):
+    print(f"query: {query.query}")
+    response = requests.post('http://ollama:11434/api/generate', json={
+        "prompt": query.query,
+        "stream": False,
+        "model": "llama3"
+    })
+    return {"answer": response.json()['response']}
 
 @app.post("/ask_pdf")
-async def ask_pdf_post(query_request: QueryRequest):
-    print("Post /ask_pdf called")
-    query = query_request.query
-    print(f"query: {query}")
-
+async def ask_pdf_post(query: Query):
+    print(f"query: {query.query}")
     print("Loading vector store")
     vector_store = Chroma(persist_directory=folder_path, embedding_function=embedding)
 
@@ -71,30 +64,37 @@ async def ask_pdf_post(query_request: QueryRequest):
         },
     )
 
-    document_chain = create_stuff_documents_chain(cached_llm, raw_prompt)
-    chain = create_retrieval_chain(retriever, document_chain)
+    # Retrieve relevant documents
+    docs = retriever.get_relevant_documents(query.query)
+    context = "\n".join([doc.page_content for doc in docs])
 
-    result = chain.invoke({"input": query})
-    print(result)
+    # Prepare the prompt
+    full_prompt = raw_prompt.format(input=query.query, context=context)
 
-    sources = []
-    for doc in result["context"]:
-        sources.append(
-            {"source": doc.metadata["source"], "page_content": doc.page_content}
-        )
+    # Send request to Ollama
+    response = requests.post('http://ollama:11434/api/generate', json={
+        "prompt": full_prompt,
+        "stream": False,
+        "model": "llama3"
+    })
 
-    response_answer = {"answer": result["answer"], "sources": sources}
-    return response_answer
+    result = response.json()['response']
 
+    sources = [
+        {"source": doc.metadata["source"], "page_content": doc.page_content}
+        for doc in docs
+    ]
 
-@app.post("/pdf")
+    return {"answer": result, "sources": sources}
+
+@app.post("/add_pdf")
 async def pdf_post(file: UploadFile = File(...)):
     file_name = file.filename
     save_file = f"pdf/{file_name}"
-
-    with open(save_file, "wb") as f:
-        f.write(await file.read())
-
+    
+    with open(save_file, "wb") as buffer:
+        buffer.write(await file.read())
+    
     print(f"filename: {file_name}")
 
     loader = PDFPlumberLoader(save_file)
@@ -110,38 +110,29 @@ async def pdf_post(file: UploadFile = File(...)):
 
     vector_store.persist()
 
-    response = {
+    return {
         "status": "Successfully Uploaded",
         "filename": file_name,
         "doc_len": len(docs),
         "chunks": len(chunks),
     }
-    return response
-
 
 @app.post("/delete_pdf")
-async def delete_pdf_post(delete_pdf_request: DeletePDFRequest):
-    print("Post /delete_pdf called")
-    file_name = delete_pdf_request.file_name
+async def delete_pdf_post(delete_pdf: DeletePDF):
+    file_name = delete_pdf.file_name
     print(f"file_name: {file_name}")
 
     file_path = f"pdf/{file_name}"
     if os.path.exists(file_path):
         os.remove(file_path)
-        response = {"status": "File deleted successfully"}
+        return {"status": "File deleted successfully"}
     else:
         raise HTTPException(status_code=404, detail="File not found")
 
-    return response
-
-
 @app.get("/list_pdfs")
 async def list_pdfs():
-    print("Get /list_pdfs called")
     pdf_files = [file for file in os.listdir("pdf") if file.endswith(".pdf")]
-    response = {"pdf_files": pdf_files}
-    return response
-
+    return {"pdf_files": pdf_files}
 
 if __name__ == "__main__":
     import uvicorn

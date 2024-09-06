@@ -1,5 +1,3 @@
-version: "3"
-
 services:
   web:
     build: fastapi
@@ -18,7 +16,7 @@ services:
       - tutorial-vol:/ollama
     networks:
       - tutorial-net
-    entrypoint: ["/usr/bin/bash", "/pull-llama3.sh"]
+    entrypoint: ["/usr/bin/bash", "/pull-llama3.1.sh"]
 
 networks:
   tutorial-net:

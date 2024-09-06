@@ -26,4 +26,4 @@ EXPOSE 8080
 # Run the application
 # CMD fastapi run --reload
 # CMD python fastapiapp.py
-CMD ["python", "fastapiapp.py", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["python", "fastapiapp.py", "--host", "0.0.0.0", "--port", "8000"]
