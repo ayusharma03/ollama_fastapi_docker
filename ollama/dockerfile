@@ -1,5 +1,5 @@
 # Use the Ollama base image
-FROM ollama/ollama
+FROM ollama/ollama:rocm
 
 # Install dos2unix to fix potential line ending issues
 RUN apt-get update && apt-get install -y dos2unix
